@@ -15,14 +15,21 @@ A prune shows up in the transcript as a `/compact dcp-prune` run: the mod
 records what to drop, runs that marked `/compact`, and answers it itself, so
 no summary is written. A `/compact` you type yourself is untouched.
 
-## Run it
+## Install
+
+At the prompt of a terminal session:
 
 ```
-claude --plugin-dir ~/Projects/MyProjects/claude-dcp
+/plugin install dcp --marketplace muhammadyusuf-kurbonov/claude-dcp
 ```
 
-To load it in every session, add the folder to `CLAUDE_CODE_PLUGIN_DIRS` in
-the `env` block of `~/.claude/settings.json`.
+Answer `y` to add the marketplace, then pick a scope.
+
+To run it from a clone instead:
+
+```
+claude --plugin-dir path/to/claude-dcp
+```
 
 ## What it costs
 

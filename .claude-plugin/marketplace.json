@@ -1,0 +1,5 @@
+{
+  "name": "claude-dcp",
+  "owner": { "name": "muhammadyusuf-kurbonov" },
+  "plugins": [{ "name": "dcp", "source": "./" }]
+}

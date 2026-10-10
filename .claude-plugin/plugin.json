@@ -1,0 +1,6 @@
+{
+  "name": "dcp",
+  "version": "0.1.0",
+  "description": "/prune: drop tool outputs from the context, all at once or picked from a list",
+  "types": "./types/index.d.ts"
+}

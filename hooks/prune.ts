@@ -7,9 +7,9 @@ export const STUB = '[tool output dropped by /prune]'
 const NAMING_FIELDS = ['command', 'file_path', 'pattern', 'url', 'query', 'prompt']
 
 export function oneLine(text: string, width: number): string {
-  const line = text.replace(/\s+/g, ' ').trim()
+  const line = Array.from(text.replace(/\s+/g, ' ').trim())
 
-  return line.length > width ? `${line.slice(0, Math.max(0, width - 1))}…` : line
+  return line.length > width ? `${line.slice(0, Math.max(0, width - 1)).join('')}…` : line.join('')
 }
 
 export function summarizeInput(tool: string, input: Record<string, unknown>, width: number): string {
@@ -65,41 +65,30 @@ export function listOutputs(messages: readonly ApiRow[]): OutputRow[] {
     })
 }
 
+// Only the rows holding the results are rewritten. A call's own row goes back
+// whole: parallel calls are rows the engine merges by their handles, and a
+// rebuilt one splits the group and orphans its siblings' results.
 export function applyDrop(messages: readonly SessionMessage[], ids: ReadonlySet<string>): SessionMessage[] {
   return messages.map(message => {
-    const isTouched =
-      message.toolUses.some(use => ids.has(use.tool_use_id) && use.text !== undefined && use.text !== STUB) ||
-      (message.toolResults ?? []).some(result => ids.has(result.tool_use_id) && result.text !== STUB)
+    const results = message.toolResults ?? []
 
-    if (!isTouched) {
+    if (!results.some(result => ids.has(result.tool_use_id) && result.text !== STUB)) {
       return message
     }
 
-    const rebuilt: SessionMessage = {
+    return {
       role: message.role,
       text: message.text,
-      toolUses: message.toolUses.map(use => {
-        if (!ids.has(use.tool_use_id) || use.text === undefined) {
-          return use
-        }
-        const { result: _result, ...kept } = use
-
-        return { ...kept, text: STUB }
-      }),
-    }
-
-    if (message.toolResults !== undefined) {
-      rebuilt.toolResults = message.toolResults.map(result => {
+      toolUses: message.toolUses,
+      toolResults: results.map(result => {
         if (!ids.has(result.tool_use_id)) {
           return result
         }
         const { result: _result, ...kept } = result
 
         return { ...kept, text: STUB }
-      })
+      }),
     }
-
-    return rebuilt
   })
 }
 

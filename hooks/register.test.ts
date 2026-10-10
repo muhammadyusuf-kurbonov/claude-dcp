@@ -34,6 +34,8 @@ const RUN = {
   presentation: { isFullscreen: true, columns: 120 },
 } as const
 
+const MARK = 'dcp-prune'
+
 const START = { cwd: '/work', surface: 'terminal', isInteractive: true } as const
 
 // What the engine's bottom does for a session's start, which the kit leaves out.
@@ -72,8 +74,8 @@ test('the compaction a prune raises carries the stubs and runs no summary', asyn
     return SUMMARY
   })
   let done: SessionCompactResult | undefined
-  on('command.run', { command: 'compact' }, async () => {
-    done = await $.session.compact({ trigger: 'manual', messages: MESSAGES })
+  on('command.run', { command: 'compact' }, async (_$, e) => {
+    done = await $.session.compact({ trigger: 'manual', instructions: e.args, messages: MESSAGES })
 
     return {}
   })
@@ -81,7 +83,7 @@ test('the compaction a prune raises carries the stubs and runs no summary', asyn
   await $.command.run({ ...RUN, args: '' })
   await clock.advance(1)
 
-  expect(done?.messages?.[1]?.toolUses[0]?.text).toBe(STUB)
+  expect(done?.messages?.[1]?.handle).toBe('h1')
   expect(done?.messages?.[2]?.toolResults?.[0]?.text).toBe(STUB)
   expect(done?.messages?.[0]?.handle).toBe('h0')
   expect(summaries).toBe(0)
@@ -91,8 +93,8 @@ test('the /compact after a prune is an ordinary one again', async ($, on) => {
   const clock = mock.clock(on)
   on('session.messages', () => ({ value: API }))
   on('session.compact', () => SUMMARY)
-  on('command.run', { command: 'compact' }, async () => {
-    await $.session.compact({ trigger: 'manual', messages: MESSAGES })
+  on('command.run', { command: 'compact' }, async (_$, e) => {
+    await $.session.compact({ trigger: 'manual', instructions: e.args, messages: MESSAGES })
 
     return {}
   })
@@ -157,7 +159,7 @@ test('while a prune waits, an automatic or a subagent compaction still summarize
 
   await $.command.run({ ...RUN, args: '' })
   const auto = await $.session.compact({ trigger: 'auto', messages: MESSAGES })
-  const sub = await $.session.compact({ trigger: 'manual', agentId: 'sub-1', messages: MESSAGES })
+  const sub = await $.session.compact({ trigger: 'manual', instructions: MARK, agentId: 'sub-1', messages: MESSAGES })
 
   expect(auto.messages?.[0]?.text).toBe('summary')
   expect(sub.messages?.[0]?.text).toBe('summary')
@@ -176,7 +178,7 @@ test('a prune that fails is skipped, never summarized', async ($, on) => {
   await $.command.run({ ...RUN, args: '' })
   // A message the rewrite throws on: one whose toolUses is null.
   const broken = [{ role: 'assistant', text: '', toolUses: null }] as unknown as SessionMessage[]
-  const done = await $.session.compact({ trigger: 'manual', messages: broken })
+  const done = await $.session.compact({ trigger: 'manual', instructions: MARK, messages: broken })
 
   expect(done.skip).toBe('prune failed')
   expect(summaries).toBe(0)
@@ -302,8 +304,8 @@ for (const where of ['terminal', 'desktop'] as const) {
     const seen = surface(on)
     on('session.messages', () => ({ value: TWO_API }))
     let done: SessionCompactResult | undefined
-    on('command.run', { command: 'compact' }, async () => {
-      done = await $.session.compact({ trigger: 'manual', messages: TWO })
+    on('command.run', { command: 'compact' }, async (_$, e) => {
+      done = await $.session.compact({ trigger: 'manual', instructions: e.args, messages: TWO })
 
       return {}
     })
@@ -383,5 +385,125 @@ test('a row shows a long multi-line input as one cut line', async ($, on) => {
   expect(row).not.toContain('\n')
   expect(row.length).toBeLessThanOrEqual(80)
   expect(row).toContain('…')
+  await ui.unmount()
+})
+
+test('two prunes before the first /compact run one compaction and no summary', async ($, on) => {
+  const clock = mock.clock(on)
+  on('session.messages', () => ({ value: API }))
+  let summaries = 0
+  on('session.compact', () => {
+    summaries += 1
+
+    return SUMMARY
+  })
+  let compacts = 0
+  on('command.run', { command: 'compact' }, async (_$, e) => {
+    compacts += 1
+    await $.session.compact({ trigger: 'manual', instructions: e.args, messages: MESSAGES })
+
+    return {}
+  })
+
+  await $.command.run({ ...RUN, args: '' })
+  await $.command.run({ ...RUN, args: '' })
+  await clock.advance(1)
+
+  expect(compacts).toBe(1)
+  expect(summaries).toBe(0)
+})
+
+test("the mod's own compaction with nothing to prune is skipped, never summarized", async ($, on) => {
+  let summaries = 0
+  on('session.compact', () => {
+    summaries += 1
+
+    return SUMMARY
+  })
+
+  const done = await $.session.compact({ trigger: 'manual', instructions: MARK, messages: MESSAGES })
+
+  expect(done.skip).toBe('nothing to prune')
+  expect(summaries).toBe(0)
+})
+
+test("the person's own /compact while a prune waits summarizes with its instructions, and the prune still lands", async ($, on) => {
+  const clock = mock.clock(on)
+  on('session.messages', () => ({ value: API }))
+  const told: (string | undefined)[] = []
+  on('session.compact', (_$, e) => {
+    told.push(e.instructions)
+
+    return SUMMARY
+  })
+  let done: SessionCompactResult | undefined
+  on('command.run', { command: 'compact' }, async (_$, e) => {
+    done = await $.session.compact({ trigger: 'manual', instructions: e.args, messages: MESSAGES })
+
+    return {}
+  })
+
+  await $.command.run({ ...RUN, args: '' })
+  const own = await $.session.compact({ trigger: 'manual', instructions: 'keep the plan', messages: MESSAGES })
+  await clock.advance(1)
+
+  expect(own.messages?.[0]?.text).toBe('summary')
+  expect(told).toEqual(['keep the plan'])
+  expect(done?.messages?.[2]?.toolResults?.[0]?.text).toBe(STUB)
+})
+
+test('Apply pressed twice prunes once', async ($, on) => {
+  const clock = mock.clock(on)
+  const seen = surface(on)
+  on('session.messages', () => ({ value: TWO_API }))
+  let compacts = 0
+  on('command.run', { command: 'compact' }, () => {
+    compacts += 1
+
+    return {}
+  })
+
+  await $.command.run({ ...RUN, args: '-i' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  await Promise.all([ui.press({ key: 'apply' }), ui.press({ key: 'apply' })])
+  await clock.advance(1)
+
+  expect(compacts).toBe(1)
+  expect(seen.toasts).toEqual(['Dropping 2 tool outputs (~300 tokens).'])
+  await ui.unmount()
+})
+
+test('the controls are drawn above the rows', async ($, on) => {
+  mock.clock(on)
+  surface(on)
+  on('session.messages', () => ({ value: TWO_API }))
+
+  await $.command.run({ ...RUN, args: '-i' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const keys = (await ui.findAll({ type: 'Button' })).map(button => button.key)
+
+  expect(keys).toEqual(['apply', 'all', 'none', 'row:a', 'row:b'])
+  await ui.unmount()
+})
+
+test('a row fits a narrow pane', async ($, on) => {
+  mock.clock(on)
+  surface(on)
+  on('session.messages', () => ({
+    value: [
+      {
+        role: 'assistant' as const,
+        content: [{ type: 'tool_use', id: 'w', name: 'mcp__playwright__browser_navigate', input: { url: 'z'.repeat(90) } }],
+      },
+      { role: 'user' as const, content: [{ type: 'tool_result', tool_use_id: 'w', content: 'q'.repeat(52000) }] },
+    ],
+  }))
+
+  await $.command.run({ ...RUN, args: '-i' })
+  const ui = await $.ui.mount({ ...PANE, props: { ...PANE.props, bodyColumns: 30 }, surface: 'terminal' })
+  const row = (await ui.find({ key: 'row:w' }))?.text ?? ''
+
+  expect(row.length).toBeLessThanOrEqual(30)
+  expect(row).toContain('~13k tok')
   await ui.unmount()
 })

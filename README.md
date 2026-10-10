@@ -9,11 +9,11 @@ were; only the output bodies are replaced with `[tool output dropped by /prune]`
 | Command | What it does |
 | --- | --- |
 | `/prune` | Drops every tool output. |
-| `/prune -i` | Opens a list of tool outputs, all marked `drop`. Enter toggles a row between `drop` and `keep`, `a` marks all, `n` marks none, `Apply` runs it, Esc cancels. |
+| `/prune -i` | Opens a list of tool outputs, all marked `drop`. Enter toggles a row between `drop` and `keep`, `a` marks all, `n` marks none, `y` or `Apply` runs it, Esc cancels. |
 
-A prune shows up in the transcript as a `/compact` run: the mod records what
-to drop, runs `/compact`, and answers that one compaction itself, so no
-summary is written. A `/compact` you type yourself is untouched.
+A prune shows up in the transcript as a `/compact dcp-prune` run: the mod
+records what to drop, runs that marked `/compact`, and answers it itself, so
+no summary is written. A `/compact` you type yourself is untouched.
 
 ## Run it
 
@@ -29,9 +29,7 @@ the `env` block of `~/.claude/settings.json`.
 - A prune rewrites history, so the prompt cache is invalidated and the next
   request is billed uncached.
 - Dropped outputs are gone from the model's view for good.
-- A message that held a dropped output is rebuilt from its text and tool
-  calls. Anything else it held, such as a thinking block or an image, goes
-  with the output.
+- A dropped output goes whole: its text and any image it carried.
 - Only the main conversation is pruned, not subagents' transcripts.
 - It needs an interactive session; under `claude -p` the command says so and
   does nothing.

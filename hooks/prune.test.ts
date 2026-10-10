@@ -8,6 +8,7 @@ import {
   estimateTokens,
   formatTokens,
   listOutputs,
+  oneLine,
   parseArgs,
   summarizeInput,
   summaryLine,
@@ -113,34 +114,30 @@ describe('listOutputs', () => {
 })
 
 describe('applyDrop', () => {
-  test('stubs every chosen output on both sides of the pair', () => {
+  test('stubs every chosen result', () => {
     const out = applyDrop(MESSAGES, new Set(['a', 'b']))
 
-    expect(out[1]?.toolUses.map(u => u.text)).toEqual([STUB, STUB])
     expect(out[2]?.toolResults?.map(r => r.text)).toEqual([STUB, STUB])
   })
 
-  test('keeps the call itself: tool, input and id', () => {
-    const use = applyDrop(MESSAGES, new Set(['a']))[1]?.toolUses[0]
+  test("leaves the call's own message whole, handle included", () => {
+    // Parallel calls are rows the engine merges by their handles: a rebuilt
+    // call row splits the group and orphans its siblings' results.
+    const out = applyDrop(MESSAGES, new Set(['a', 'b']))
 
-    expect(use?.tool).toBe('Bash')
-    expect(use?.input).toEqual({ command: 'ls -la' })
-    expect(use?.tool_use_id).toBe('a')
+    expect(out[1]).toBe(MESSAGES[1])
   })
 
-  test('drops the stored record and the handle of a rewritten message', () => {
+  test('drops the stored record and the handle of a rewritten result message', () => {
     const out = applyDrop(MESSAGES, new Set(['a']))
 
-    expect(out[1]?.handle).toBeUndefined()
     expect(out[2]?.handle).toBeUndefined()
-    expect(out[1]?.toolUses[0]?.result).toBeUndefined()
     expect(out[2]?.toolResults?.[0]?.result).toBeUndefined()
   })
 
-  test('keeps the outputs not chosen in the same message', () => {
+  test('keeps the results not chosen in the same message', () => {
     const out = applyDrop(MESSAGES, new Set(['a']))
 
-    expect(out[1]?.toolUses[1]?.text).toBe('y'.repeat(800))
     expect(out[2]?.toolResults?.[1]?.text).toBe('y'.repeat(800))
   })
 
@@ -157,8 +154,10 @@ describe('applyDrop', () => {
 
   test('is idempotent', () => {
     const once = applyDrop(MESSAGES, new Set(['a', 'b']))
+    const twice = applyDrop(once, new Set(['a', 'b']))
 
-    expect(applyDrop(once, new Set(['a', 'b']))).toEqual(once)
+    expect(twice).toEqual(once)
+    expect(twice[2]).toBe(once[2])
   })
 
   test('keeps isError as it was', () => {
@@ -168,7 +167,6 @@ describe('applyDrop', () => {
     ]
     const out = applyDrop(failed, new Set(['e']))
 
-    expect(out[0]?.toolUses[0]?.isError).toBe(true)
     expect(out[1]?.toolResults?.[0]?.isError).toBe(true)
   })
 })
@@ -190,6 +188,12 @@ describe('summarizeInput', () => {
 
     expect(summarizeInput('Bash', { command: heredoc }, 12)).toBe('cat <<EOF z…')
     expect(summarizeInput('Bash', { command: 'a\t b\n\nc' }, 40)).toBe('a b c')
+  })
+})
+
+describe('oneLine', () => {
+  test('never cuts through a character made of two code units', () => {
+    expect(oneLine('ab😀😀😀', 4)).toBe('ab😀…')
   })
 })
 

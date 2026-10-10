@@ -204,3 +204,184 @@ test('in a headless session /prune says it cannot run', async ($, on) => {
 
   expect(ran.text).toBe('/prune needs an interactive session.')
 })
+
+const TWO_API = [
+  {
+    role: 'assistant' as const,
+    content: [
+      { type: 'tool_use', id: 'a', name: 'Bash', input: { command: 'ls' } },
+      { type: 'tool_use', id: 'b', name: 'Read', input: { file_path: 'a.ts' } },
+    ],
+  },
+  {
+    role: 'user' as const,
+    content: [
+      { type: 'tool_result', tool_use_id: 'a', content: 'x'.repeat(400) },
+      { type: 'tool_result', tool_use_id: 'b', content: 'y'.repeat(800) },
+    ],
+  },
+]
+
+const TWO: SessionMessage[] = [
+  {
+    role: 'assistant',
+    text: '',
+    handle: 'h1',
+    toolUses: [
+      { tool_use_id: 'a', tool: 'Bash', input: { command: 'ls' }, text: 'x'.repeat(400) },
+      { tool_use_id: 'b', tool: 'Read', input: { file_path: 'a.ts' }, text: 'y'.repeat(800) },
+    ],
+  },
+  {
+    role: 'user',
+    text: '',
+    handle: 'h2',
+    toolUses: [],
+    toolResults: [
+      { tool_use_id: 'a', text: 'x'.repeat(400), isError: false },
+      { tool_use_id: 'b', text: 'y'.repeat(800), isError: false },
+    ],
+  },
+]
+
+const PANE = {
+  plugin: 'dcp',
+  component: 'Pane',
+  requestId: 'prune',
+  props: {
+    title: 'Prune tool outputs',
+    isFocused: true,
+    bodyColumns: 80,
+    placement: 'inline',
+    scroll: { offset: 0, bodyRows: 20 },
+    view: {},
+  },
+} as const
+
+// What the engine's bottom does for a pane and a toast, which the kit leaves out.
+function surface(on: On): { opened: string[]; closed: string[]; toasts: string[] } {
+  const seen = { opened: [] as string[], closed: [] as string[], toasts: [] as string[] }
+  on('ui.open', (_$, e) => {
+    seen.opened.push(e.id)
+
+    return { value: { isPlaced: true as const } }
+  })
+  on('ui.close', (_$, e) => {
+    seen.closed.push(e.id)
+
+    return { value: undefined }
+  })
+  on('ui.toast', (_$, e) => {
+    seen.toasts.push(e.text)
+
+    return { value: undefined }
+  })
+
+  return seen
+}
+
+for (const where of ['terminal', 'desktop'] as const) {
+  test(`/prune -i lists every output marked to drop (${where})`, async ($, on) => {
+    mock.clock(on)
+    const seen = surface(on)
+    on('session.messages', () => ({ value: TWO_API }))
+
+    const ran = await $.command.run({ ...RUN, args: '-i' })
+    const ui = await $.ui.mount({ ...PANE, surface: where })
+
+    expect(ran.text).toBeUndefined()
+    expect(seen.opened).toEqual(['prune'])
+    expect((await ui.find({ key: 'row:a' }))?.text).toContain('drop')
+    expect((await ui.find({ key: 'row:b' }))?.text).toContain('a.ts')
+    expect(await ui.find({ type: 'Text', text: 'dropping 2 of 2 · ~300 tok' })).toBeDefined()
+    await ui.unmount()
+  })
+
+  test(`a pressed row is kept, and Apply drops only the rest (${where})`, async ($, on) => {
+    const clock = mock.clock(on)
+    const seen = surface(on)
+    on('session.messages', () => ({ value: TWO_API }))
+    let done: SessionCompactResult | undefined
+    on('command.run', { command: 'compact' }, async () => {
+      done = await $.session.compact({ trigger: 'manual', messages: TWO })
+
+      return {}
+    })
+
+    await $.command.run({ ...RUN, args: '-i' })
+    const ui = await $.ui.mount({ ...PANE, surface: where })
+    await ui.press({ key: 'row:b' })
+
+    expect((await ui.find({ key: 'row:b' }))?.text).toContain('keep')
+    expect(await ui.find({ type: 'Text', text: 'dropping 1 of 2 · ~100 tok' })).toBeDefined()
+
+    await ui.press({ key: 'apply' })
+    await clock.advance(1)
+
+    expect(done?.messages?.[1]?.toolResults?.map(result => result.text)).toEqual([STUB, 'y'.repeat(800)])
+    expect(seen.closed).toEqual(['prune'])
+    expect(seen.toasts).toEqual(['Dropping 1 tool output (~100 tokens).'])
+    await ui.unmount()
+  })
+
+  test(`none keeps everything, all drops everything, and Apply on none drops nothing (${where})`, async ($, on) => {
+    const clock = mock.clock(on)
+    const seen = surface(on)
+    on('session.messages', () => ({ value: TWO_API }))
+    let compacts = 0
+    on('command.run', { command: 'compact' }, () => {
+      compacts += 1
+
+      return {}
+    })
+
+    await $.command.run({ ...RUN, args: '-i' })
+    const ui = await $.ui.mount({ ...PANE, surface: where })
+    await ui.press({ key: 'none' })
+
+    expect(await ui.find({ type: 'Text', text: 'dropping 0 of 2' })).toBeDefined()
+
+    await ui.press({ key: 'all' })
+
+    expect(await ui.find({ type: 'Text', text: 'dropping 2 of 2' })).toBeDefined()
+
+    await ui.press({ key: 'none' })
+    await ui.press({ key: 'apply' })
+    await clock.advance(1)
+
+    expect(compacts).toBe(0)
+    expect(seen.toasts).toEqual(['No tool outputs to drop.'])
+    await ui.unmount()
+  })
+}
+
+test('/prune -i with nothing to drop opens no pane', async ($, on) => {
+  const seen = surface(on)
+  on('session.messages', () => ({ value: [] }))
+
+  const ran = await $.command.run({ ...RUN, args: '-i' })
+
+  expect(ran.text).toBe('No tool outputs to drop.')
+  expect(seen.opened).toEqual([])
+})
+
+test('a row shows a long multi-line input as one cut line', async ($, on) => {
+  mock.clock(on)
+  surface(on)
+  const heredoc = `cat <<EOF\n${'z'.repeat(5000)}\nEOF`
+  on('session.messages', () => ({
+    value: [
+      { role: 'assistant' as const, content: [{ type: 'tool_use', id: 'h', name: 'Bash', input: { command: heredoc } }] },
+      { role: 'user' as const, content: [{ type: 'tool_result', tool_use_id: 'h', content: 'out' }] },
+    ],
+  }))
+
+  await $.command.run({ ...RUN, args: '-i' })
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+  const row = (await ui.find({ key: 'row:h' }))?.text ?? ''
+
+  expect(row).not.toContain('\n')
+  expect(row.length).toBeLessThanOrEqual(80)
+  expect(row).toContain('…')
+  await ui.unmount()
+})

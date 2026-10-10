@@ -6,12 +6,17 @@ export const STUB = '[tool output dropped by /prune]'
 
 const NAMING_FIELDS = ['command', 'file_path', 'pattern', 'url', 'query', 'prompt']
 
+export function oneLine(text: string, width: number): string {
+  const line = text.replace(/\s+/g, ' ').trim()
+
+  return line.length > width ? `${line.slice(0, Math.max(0, width - 1))}…` : line
+}
+
 export function summarizeInput(tool: string, input: Record<string, unknown>, width: number): string {
   const named = NAMING_FIELDS.map(field => input[field]).find(value => typeof value === 'string')
   const picked = named ?? Object.values(input).find(value => typeof value === 'string') ?? ''
-  const line = String(picked).replace(/\s+/g, ' ').trim()
 
-  return line.length > width ? `${line.slice(0, Math.max(0, width - 1))}…` : line
+  return oneLine(String(picked), width)
 }
 
 // The conversation in Messages API form, as `$.session.messages({ as: 'api' })`

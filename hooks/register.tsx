@@ -1,94 +1,97 @@
+import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-const STUB = '[tool output dropped by /prune]'
-const OUT = '/tmp/claude-1000/-home-muhammadyusuf-kurbonov-Projects-MyProjects-claude-dcp/685d6bce-9814-49b0-ad62-a54b629570bf/scratchpad/probe1/result'
-let isProbing = false
+import type { OutputRow } from '../types'
+import { applyDrop, listOutputs, parseArgs, summaryLine } from './prune'
 
-async function run($: EngineInterface, source: string) {
-  let line: string
+const USAGE = 'Usage: /prune drops every tool output; /prune -i picks which.'
+
+const pending = atom({ plugin: 'dcp', key: 'pending' } as const, null)
+
+// A command hook may not compact under the turn it holds, and a plugin's own
+// $.session.compact() skips its own hooks. So the prune rides a /compact run
+// from a timer, which the session.compact hook below answers.
+async function compact($: EngineInterface): Promise<void> {
+  let failure: string | undefined
+
   try {
-    const done = await $.session.compact()
-    line = `${source}: ${JSON.stringify(Object.keys(done))} ${done.messages?.length ?? done.skip}`
+    await $.command.run({ command: 'compact' })
   } catch (error) {
-    line = `${source} threw: ${String(error)}`
-  } finally {
-    isProbing = false
+    failure = String(error)
   }
-  $.ui.log(line)
-  await $.fs.write(`${OUT}-${source}.txt`, line)
+
+  if ((await read($, pending)) !== null) {
+    await update($, pending, () => null)
+    $.ui.log(`Prune skipped: ${failure ?? 'the compaction did not run'}`)
+  }
+}
+
+async function prune($: EngineInterface, picked: readonly OutputRow[]): Promise<string> {
+  if (picked.length === 0) {
+    return summaryLine([])
+  }
+
+  await update($, pending, () => picked.map(row => row.id))
+  $.clock.after(0, () => void compact($))
+
+  return summaryLine(picked)
 }
 
 export const register: Register = on => {
+  let isInteractive = true
+
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'prune', description: 'Probe: stub every tool output' })
+    isInteractive = e.isInteractive
+    await update($, pending, () => null)
+    await $.command.register({
+      name: 'prune',
+      description: 'Drop tool outputs from the context (-i to pick which)',
+      argumentHint: '[-i]',
+    })
 
     return next(e)
   })
 
   on('command.run', { command: 'prune' }, async ($, e) => {
-    isProbing = true
-    const mode = e.args.trim()
-    $.clock.after(0, () => {
-      void (async () => {
-        let line: string
-        try {
-          const done =
-            mode === 'submit'
-              ? await $.prompt.submit({ text: '/compact', asUser: true })
-              : await $.command.run({ command: 'compact', args: '' })
-          line = `${mode}: ${JSON.stringify(done)}`
-        } catch (error) {
-          line = `${mode} threw: ${String(error)}`
-        }
-        $.ui.log(line)
-        await $.fs.write(`${OUT}-via-${mode}.txt`, line)
-      })()
-    })
+    const mode = parseArgs(e.args)
 
-    return { text: 'probe scheduled' }
-  })
-
-  on('prompt.submit', ($, e, next) => {
-    if (e.text.includes('PRUNE_AFTER_TURN')) {
-      isProbing = true
+    if (mode === 'usage') {
+      return { text: USAGE }
     }
 
-    return next(e)
-  })
-
-  on('turn.complete', async ($, e, next) => {
-    const done = await next(e)
-    if (isProbing) {
-      await run($, 'turn')
+    if (!isInteractive) {
+      return { text: '/prune needs an interactive session.' }
     }
 
-    return done
+    const found = listOutputs(await $.session.messages({ as: 'api' }))
+
+    return { text: await prune($, found) }
   })
 
-  on('session.compact', async ($, e, next) => {
-    await $.fs.write(`${OUT}-compact-${e.trigger}.txt`, JSON.stringify(e, null, 1))
-    if (!isProbing) {
+  on('session.compact', { trigger: 'manual' }, async ($, e, next) => {
+    const ids = await read($, pending)
+
+    if (ids === null || e.agentId !== undefined) {
       return next(e)
     }
 
-    const messages = e.messages.map(m => {
-      const hasResult = (m.toolResults?.length ?? 0) > 0 || m.toolUses.some(u => u.text !== undefined)
-
-      if (!hasResult) {
-        return m
-      }
-
-      return {
-        role: m.role,
-        text: m.text,
-        toolUses: m.toolUses.map(({ result: _r, ...u }) => (u.text === undefined ? u : { ...u, text: STUB })),
-        toolResults: m.toolResults?.map(({ result: _r, ...r }) => ({ ...r, text: STUB })),
-      }
-    })
-
-    isProbing = false
-    await $.fs.write(`${OUT}-hook-answered.txt`, e.trigger)
+    const messages = applyDrop(e.messages, new Set(ids))
+    await update($, pending, () => null)
 
     return { messages }
+  }).catch(async ($, e, next) => {
+    if (next.called || e.agentId !== undefined) {
+      return next(e)
+    }
+
+    try {
+      if ((await read($, pending)) === null) {
+        return next(e)
+      }
+    } catch {
+      return { skip: 'prune failed' }
+    }
+
+    return { skip: 'prune failed' }
   })
 }

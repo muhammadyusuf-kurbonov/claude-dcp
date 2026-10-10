@@ -1,6 +1,7 @@
 import type { SessionMessage } from 'claude-code'
 import { describe, expect, test } from 'claude-code/testing'
 
+import type { ApiRow } from './prune'
 import {
   STUB,
   applyDrop,
@@ -41,22 +42,73 @@ const MESSAGES: SessionMessage[] = [
   },
 ]
 
+const API: ApiRow[] = [
+  { role: 'user', content: [{ type: 'text', text: 'list files' }] },
+  {
+    role: 'assistant',
+    content: [
+      { type: 'text', text: 'Looking.' },
+      { type: 'tool_use', id: 'a', name: 'Bash', input: { command: 'ls -la' } },
+      { type: 'tool_use', id: 'b', name: 'Read', input: { file_path: 'src/index.ts' } },
+    ],
+  },
+  {
+    role: 'user',
+    content: [
+      { type: 'tool_result', tool_use_id: 'a', content: 'x'.repeat(400) },
+      { type: 'tool_result', tool_use_id: 'b', content: [{ type: 'text', text: 'y'.repeat(800) }] },
+    ],
+  },
+  { role: 'assistant', content: [{ type: 'tool_use', id: 'c', name: 'Bash', input: { command: 'npm test' } }] },
+]
+
 describe('listOutputs', () => {
   test('lists answered calls oldest first, marked to drop', () => {
-    expect(listOutputs(MESSAGES)).toEqual([
+    expect(listOutputs(API)).toEqual([
       { id: 'a', tool: 'Bash', summary: 'ls -la', chars: 400, isDropped: true },
       { id: 'b', tool: 'Read', summary: 'src/index.ts', chars: 800, isDropped: true },
     ])
   })
 
   test('skips a call still in flight', () => {
-    expect(listOutputs(MESSAGES).some(row => row.id === 'c')).toBe(false)
+    expect(listOutputs(API).some(row => row.id === 'c')).toBe(false)
   })
 
   test('skips an output already stubbed', () => {
-    const pruned = applyDrop(MESSAGES, new Set(['a']))
+    const pruned: ApiRow[] = [
+      API[0]!,
+      API[1]!,
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'a', content: STUB },
+          { type: 'tool_result', tool_use_id: 'b', content: [{ type: 'text', text: 'y'.repeat(800) }] },
+        ],
+      },
+    ]
 
     expect(listOutputs(pruned).map(row => row.id)).toEqual(['b'])
+  })
+
+  test('counts only the text of a result that also holds an image', () => {
+    const mixed: ApiRow[] = [
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'p', name: 'Read', input: { file_path: 'a.png' } }] },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'p',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+              { type: 'text', text: 'ok' },
+            ],
+          },
+        ],
+      },
+    ]
+
+    expect(listOutputs(mixed)).toEqual([{ id: 'p', tool: 'Read', summary: 'a.png', chars: 2, isDropped: true }])
   })
 })
 
@@ -154,10 +206,10 @@ describe('tokens and summary', () => {
   })
 
   test('names the count and the size', () => {
-    const rows = listOutputs(MESSAGES)
+    const rows = listOutputs(API)
 
-    expect(summaryLine(rows)).toBe('Dropped 2 tool outputs (~300 tokens).')
-    expect(summaryLine(rows.slice(0, 1))).toBe('Dropped 1 tool output (~100 tokens).')
+    expect(summaryLine(rows)).toBe('Dropping 2 tool outputs (~300 tokens).')
+    expect(summaryLine(rows.slice(0, 1))).toBe('Dropping 1 tool output (~100 tokens).')
     expect(summaryLine([])).toBe('No tool outputs to drop.')
   })
 })

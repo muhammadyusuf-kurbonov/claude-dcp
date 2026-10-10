@@ -14,18 +14,50 @@ export function summarizeInput(tool: string, input: Record<string, unknown>, wid
   return line.length > width ? `${line.slice(0, Math.max(0, width - 1))}…` : line
 }
 
-export function listOutputs(messages: readonly SessionMessage[]): OutputRow[] {
-  return messages.flatMap(message =>
-    message.toolUses
-      .filter(use => use.text !== undefined && use.text !== STUB)
-      .map(use => ({
-        id: use.tool_use_id,
-        tool: use.tool,
-        summary: summarizeInput(use.tool, use.input, 200),
-        chars: use.text?.length ?? 0,
-        isDropped: true,
-      })),
+// The conversation in Messages API form, as `$.session.messages({ as: 'api' })`
+// answers it: unlike the rows, it holds only what the next request sends.
+export type ApiRow = { role: string; content: { type: string; [field: string]: unknown }[] }
+
+function textOf(content: unknown): string {
+  if (typeof content === 'string') {
+    return content
+  }
+
+  if (!Array.isArray(content)) {
+    return ''
+  }
+
+  return content.map(block => (block?.type === 'text' && typeof block.text === 'string' ? block.text : '')).join('')
+}
+
+export function listOutputs(messages: readonly ApiRow[]): OutputRow[] {
+  const blocks = messages.flatMap(message => message.content)
+  const results = new Map(
+    blocks
+      .filter(block => block.type === 'tool_result')
+      .map(block => [String(block.tool_use_id), textOf(block.content)]),
   )
+
+  return blocks
+    .filter(block => block.type === 'tool_use')
+    .flatMap(block => {
+      const text = results.get(String(block.id))
+
+      if (text === undefined || text === STUB) {
+        return []
+      }
+      const input = (block.input ?? {}) as Record<string, unknown>
+
+      return [
+        {
+          id: String(block.id),
+          tool: String(block.name),
+          summary: summarizeInput(String(block.name), input, 200),
+          chars: text.length,
+          isDropped: true,
+        },
+      ]
+    })
 }
 
 export function applyDrop(messages: readonly SessionMessage[], ids: ReadonlySet<string>): SessionMessage[] {
@@ -85,7 +117,7 @@ export function summaryLine(rows: readonly OutputRow[]): string {
   const chars = rows.reduce((sum, row) => sum + row.chars, 0)
   const noun = rows.length === 1 ? 'tool output' : 'tool outputs'
 
-  return `Dropped ${rows.length} ${noun} (${formatTokens(estimateTokens(chars))} tokens).`
+  return `Dropping ${rows.length} ${noun} (${formatTokens(estimateTokens(chars))} tokens).`
 }
 
 export function parseArgs(args: string): 'all' | 'interactive' | 'usage' {

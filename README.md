@@ -51,3 +51,7 @@ claude plugin test .
 
 The mod is written against the early-access plugin API of Claude Code
 2.1.296, which may change between releases.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
